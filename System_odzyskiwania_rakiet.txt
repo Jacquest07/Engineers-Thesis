@@ -1,0 +1,341 @@
+//do³¹cznie bibliotek
+#include <SPI.h>                  //komunikacja MISO,MOSI,SCK
+#include <SD.h>                   //biblioteka karty SD              
+#include <Wire.h>                 //komunikacja I2C
+#include <Adafruit_BMP085.h>      //biblioteka BMP180
+#include <ADXL345.h>              //biblioteka akcelerometru
+#include <VirtualWire.h>          //bilioteka komunikacji radiowej
+#include <DataCoder.h>            //biblioteka kodowania wiadomosci
+
+Adafruit_BMP085 bmp;
+ADXL345 accelerometer;
+File myFile;
+
+//definiowanie zmiennych
+
+int akcelerometr,wysokosc_z,temperatura_z,d;
+float temperatura,cisnienie;
+int ladunek=0;
+float wektorwypadkowy=0;
+int dane[9]={0,0,0,0,0,0,0,0,0};   //czas,akcelerometr,wysokosc,temperatura,blad_akcelerometr,blad_barometr,blad_kartaSD,uzbr, sytuacja_spadochron
+byte a=0x00;                       // tworzenie bitu wiadomosci skladajacego sie tylko z TAK lub NIE
+int spr=0;                         //odpowiada za przerwanie petli wysylania
+unsigned long time;
+unsigned long czas,czas2;
+int start,start1,spadochron,spadochron1=0;
+int wysokosc1=0;
+float wysokosc,wysokosc2,wysokosc3,wysokosc4=0;
+int przerwa=0;
+int test=0;
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void setup(void) 
+{
+ //ustawienie taktowania
+  Serial.begin(9600);
+
+ //ustawienie portów
+
+ pinMode(3, OUTPUT);          //spadochron
+ pinMode(5, OUTPUT);          //start
+
+ pinMode(8, INPUT);           //przycisk A
+ pinMode(7, INPUT);           //przycisk B
+ pinMode(6, INPUT);           //przycisk C
+ pinMode(2, INPUT);           //przycisk D
+
+ //wlaczenie I2c
+  Wire.begin();
+
+//konfiguracja VirtualWire
+  vw_set_tx_pin(9);           // port nadawczy
+  vw_setup(2000);             //predkosc
+
+  pinMode(9, OUTPUT);          //ustawienie pinu 9 jako wyjscie
+//////////////////////SD_CARD////////////////////////////
+ delay(50);
+  if (!SD.begin(4))
+  {
+    dane[6]=1;
+    bitWrite(a,7,HIGH);
+  }
+
+ myFile = SD.open("pomiary.txt", FILE_WRITE);
+  if (myFile)
+  {
+    myFile.println("czas,system,akcelerometr,os_X,os_Y,os_Z,wysokosc,temperatura,cisnienie");
+    myFile.close();
+  }
+  else
+  {
+    dane[6]=1;
+    bitWrite(a,7,HIGH);
+  }
+  
+
+ //////////////////////////BMP180/////////////////////////
+  if (!bmp.begin())
+  {
+    dane[5]=1;
+    bitWrite(a,6,HIGH);
+  }
+ 
+/////////////////////////AKCELEROMETR//////////////////////////
+
+  // inicjalizacja ADXL345
+
+  if (!accelerometer.begin())
+  {
+    dane[4]=1;
+    bitWrite(a,5,HIGH);
+  }
+  accelerometer.setRange(ADXL345_RANGE_16G);    //ustawienie zakresu
+
+
+
+
+}
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void loop(void) 
+{
+  time=millis();           //czas od startu arduino
+  Serial.println("Czas");
+  Serial.println(time);
+
+ //Uzbrajanie spadochronu i startu
+if (digitalRead(7) == HIGH)  
+{
+  dane[7]=1;
+  bitWrite(a,0,HIGH);
+}
+
+////////////////START///////////////////////////////////////
+
+  if (dane[7]==1)
+  {
+  if (digitalRead(6) == HIGH)
+  {
+    start1=1;                   //petla odpalenia
+    przerwa=1;                  //wylaczenie petli nadawania wiadomosci
+    start=1;                    //moment startu
+    czas=millis();              //czas w ktorym nastapil zaplon
+   
+  }
+  }
+  if (start1>0)                      //petla odpalania ladunku
+    {
+       start1++;
+       digitalWrite(5, HIGH);
+       if (start1==15)
+          {
+            start1=0;
+            digitalWrite(5,LOW);
+          } 
+    }
+
+///////////////////////////////CZAS////////////////////////
+
+  czas2=millis()-czas;          //ustalanie czasu od momentu startu
+  dane[2]=czas2;
+
+////////////////////////////////ODCZYTY////////////////////////////////////////////
+
+// BMP180
+
+    //ODCZYTYWANIE TEMPERATURY, CISNIENIA i WYSOKOSCI
+  wysokosc=bmp.readAltitude();
+  temperatura=bmp.readTemperature();
+  cisnienie=bmp.readPressure();
+  wysokosc_z=round(wysokosc);                    // zaokraglanie do calosci 
+  temperatura_z=round(temperatura);              //zaokraglanie do calosci
+  
+  dane[2]=wysokosc_z;
+  dane[3]=temperatura_z;
+
+  Serial.print("Wysokosc =");
+  Serial.println(wysokosc);
+  Serial.print("Temperatura =");
+  Serial.println(temperatura);
+  Serial.print("Cisnienie =");
+  Serial.println(cisnienie);
+  Serial.println(); 
+    
+// Wyswietlanie wartosci ADXL345
+// odczyt ADXL345 raw=surowych , odczyt norm=przeliczonych na g i wyskalowanych
+  Vector raw = accelerometer.readRaw();
+  Vector norm = accelerometer.readNormalize();
+  Vector scaled = accelerometer.readScaled();
+
+///////////////////////////////////////////////////////////////////////////////////////AKCELEROMETR - SYTUACJA 1////////////////////////////////////////////////////////////
+//wektor wypadkowy 3 osi ADXL345
+  wektorwypadkowy=sqrt((sqrt(norm.XAxis*norm.XAxis + norm.YAxis*norm.YAxis)*sqrt(norm.XAxis*norm.XAxis + norm.YAxis*norm.YAxis))+norm.ZAxis*norm.ZAxis);
+  Serial.print("Wektor wypadkowy 3 osi wynosi ");
+  Serial.println(wektorwypadkowy);
+  akcelerometr=round(wektorwypadkowy);
+  dane[1]=akcelerometr;
+  if (dane[1]!=1)
+  {
+    bitWrite(a,4,HIGH);          //okreslanie poprawnosci dzialania akcelerometru na ziemii
+  }
+
+// moment, w ktorym przeciazenie jest bardzo male i jest to albo opadanie albo wznoszenie
+  if (spadochron1==0)
+  {                     
+  if (wektorwypadkowy <=0.3)
+    {
+      Serial.println("OPADANIE!!");
+       dane[0]=1;
+       bitWrite(a,1,HIGH);
+          if (czas2 >= 5000)                       //dodatkowe zabezpieczenie w celu unikniecia detekcji wznoszenia jako opadanie
+             {
+                if (start==1)
+                  {
+                    spadochron1=1;                   //oznaczenie dotyczace wykonania petli odpowiedzialnej za wystrzelenie spadochronu
+                    spadochron=1;                    //moment w którym spadochron zostaje otwarty
+                   dane[8]=1;                        //u¿yty system wyzwolenia spadochronu
+                   } 
+             }    
+    }
+  }
+///////////////////////////////////////////////////////////////////////////////////////Spadek wysokosci - SYTUACJA 2////////////////////////////////////////////////////////////   
+
+if (spadochron1==0)
+{
+    if (wysokosc1==0)
+    {
+    wysokosc1=1;
+     wysokosc2=wysokosc;
+    }
+    else if (wysokosc1==1)
+    {
+       wysokosc1=0;
+       wysokosc3=wysokosc;
+       wysokosc4=wysokosc3-wysokosc2;
+        if (wysokosc4<=-3)
+       {
+        Serial.println("SPADEK WYSOKOSCI");
+        dane[0]=2;
+        bitWrite(a,2,HIGH);
+        if (start==1)
+        {
+          spadochron1=1;
+          spadochron=1;
+          dane[8]=2;
+        }
+       }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////////////Wyliczony czas odpalenia ³adunku - SYTUACJA 3//////////////////////////////////////////////////////////// 
+
+if (spadochron1==0)
+{
+  if (czas2>10000)
+  {
+    dane[0]=3;
+    bitWrite(a,3,HIGH);
+        if (start==1)
+      {
+        spadochron1=1;
+        spadochron=1;
+        dane[8]=3;
+      }
+  }
+}
+
+//////////////////////////////////////////////////////////////ODPALANIE DRUGIEGO LADUNKU ODPOWIEDZIALNEGO ZA SPADOCHRON////////////////////////////////////////////////
+
+
+ if (spadochron>0)            //petla odpalania ladunku
+ {
+  spadochron++;
+  digitalWrite(3,HIGH);
+    if (spadochron==15)
+    {
+    spadochron=0;
+    digitalWrite(3,LOW);
+    }
+ }
+//////////////////////////////////////////////////////////////////////////SD KARTA///////////////////////////////////////////////////////////////
+//Zapis na karcie
+ myFile = SD.open("pomiary.txt", FILE_WRITE);
+ //czas,system,akcelerometr,os_X,os_Y,os_Z,wysokosc,temperatura,cisnienie
+  if (myFile)
+  {
+    myFile.print(czas2);
+    myFile.print(",");
+    myFile.print(dane[8]);
+    myFile.print(",");
+    myFile.print(wektorwypadkowy);
+    myFile.print(",");
+    myFile.print(norm.XAxis);
+    myFile.print(",");
+    myFile.print(norm.YAxis);
+    myFile.print(",");
+    myFile.print(norm.ZAxis);
+    myFile.print(",");
+    myFile.print(wysokosc);
+    myFile.print(",");
+    myFile.print(temperatura);
+    myFile.print(",");
+    myFile.print(cisnienie);
+    myFile.println();
+    myFile.close();
+  }
+else
+  {
+    dane[6]=1;
+    bitWrite(a,7,HIGH);
+  }
+
+  //wyswietlanie  tablicy danych
+  Serial.print(dane[0]);
+  Serial.print("    ");
+  Serial.print(dane[1]);
+  Serial.print("    ");
+  Serial.print(dane[2]);
+  Serial.print("    ");
+  Serial.print(dane[3]);
+  Serial.print("    ");
+  Serial.print(dane[4]);
+  Serial.print("    ");
+  Serial.print(dane[5]);
+  Serial.print("    ");
+  Serial.print(dane[6]);
+  Serial.print("    ");
+  Serial.print(dane[7]);
+  Serial.print("    ");
+  Serial.print(dane[8]);
+  Serial.print("    ");
+  Serial.println();
+
+  //////////////////////////////////////RESET///////////////////////////////////////////
+  if (digitalRead(8) == HIGH)
+  {
+    software_Reset();
+  }
+   
+  ///////////////////////////////////////Przygotowywanie wiadomosci / kodowanie//////////////
+if (przerwa==0)
+{
+float wiadomosc[RF_DATA_ARRAY_SIZE];
+wiadomosc[0] = a;   //wysylanie wartosci w DEC
+wiadomosc[1] = dane[2];
+wiadomosc[2] = dane[3]; 
+
+union RFData wiadomosc1;
+EncodeRFData(wiadomosc, wiadomosc1);
+TransmitRFData(wiadomosc1);
+}
+
+ 
+}
+
+void software_Reset()
+  {
+    asm volatile (" jmp 0");
+  }
+  
+
+
+
